@@ -10,7 +10,7 @@ Ficheiro .env (na mesma pasta):
     WELCOME_CHANNEL_ID=id_do_canal     (opcional, canal de boas-vindas)
 
 Executar:
-    python bot.py
+    python main.py
 """
 
 import os
