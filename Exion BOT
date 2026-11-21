@@ -1,0 +1,231 @@
+"""
+Bot de Discord (discord.py 2.x) com slash commands.
+
+Instalação:
+    pip install -U discord.py python-dotenv
+
+Ficheiro .env (na mesma pasta):
+    DISCORD_TOKEN=o_teu_token
+    GUILD_ID=id_do_teu_servidor        (opcional, sincroniza comandos de imediato)
+    WELCOME_CHANNEL_ID=id_do_canal     (opcional, canal de boas-vindas)
+
+Executar:
+    python bot.py
+"""
+
+import os
+
+import discord
+from discord import app_commands
+from discord.ext import commands
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")
+GUILD_ID = os.getenv("GUILD_ID")
+WELCOME_CHANNEL_ID = os.getenv("WELCOME_CHANNEL_ID")
+
+# Intents: "members" é necessário para o evento de boas-vindas.
+# Ativa "Server Members Intent" no Developer Portal.
+intents = discord.Intents.default()
+intents.members = True
+
+
+class MeuBot(commands.Bot):
+    def __init__(self):
+        super().__init__(command_prefix="!", intents=intents)
+
+    async def setup_hook(self):
+        """Corre uma vez ao iniciar: sincroniza os slash commands."""
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            self.tree.copy_global_to(guild=guild)
+            await self.tree.sync(guild=guild)
+            print(f"Comandos sincronizados no servidor {GUILD_ID}")
+        else:
+            await self.tree.sync()
+            print("Comandos globais sincronizados (podem demorar até 1h)")
+
+
+bot = MeuBot()
+
+
+# ---------------------------------------------------------------- Eventos
+@bot.event
+async def on_ready():
+    print(f"Ligado como {bot.user} (ID: {bot.user.id})")
+    await bot.change_presence(activity=discord.Game(name="/ajuda"))
+
+
+@bot.event
+async def on_member_join(member: discord.Member):
+    channel = None
+    if WELCOME_CHANNEL_ID:
+        channel = member.guild.get_channel(int(WELCOME_CHANNEL_ID))
+    channel = channel or member.guild.system_channel
+    if channel:
+        await channel.send(f"👋 Bem-vindo(a) ao servidor, {member.mention}!")
+
+
+@bot.tree.error
+async def on_app_command_error(
+    interaction: discord.Interaction, error: app_commands.AppCommandError
+):
+    if isinstance(error, app_commands.MissingPermissions):
+        msg = "❌ Não tens permissão para usar este comando."
+    elif isinstance(error, app_commands.BotMissingPermissions):
+        msg = "❌ Não tenho as permissões necessárias para fazer isso."
+    else:
+        msg = "❌ Ocorreu um erro inesperado."
+        print(f"Erro: {error!r}")
+
+    if interaction.response.is_done():
+        await interaction.followup.send(msg, ephemeral=True)
+    else:
+        await interaction.response.send_message(msg, ephemeral=True)
+
+
+# ---------------------------------------------------------- Comandos gerais
+@bot.tree.command(name="ping", description="Mostra a latência do bot")
+async def ping(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        f"🏓 Pong! {round(bot.latency * 1000)} ms"
+    )
+
+
+@bot.tree.command(name="ajuda", description="Lista os comandos disponíveis")
+async def ajuda(interaction: discord.Interaction):
+    embed = discord.Embed(title="📖 Comandos", color=discord.Color.blurple())
+    embed.add_field(
+        name="Gerais",
+        value="`/ping` `/ajuda` `/servidor` `/utilizador` `/avatar`",
+        inline=False,
+    )
+    embed.add_field(
+        name="Moderação",
+        value="`/limpar` `/expulsar` `/banir`",
+        inline=False,
+    )
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+
+@bot.tree.command(name="servidor", description="Informações do servidor")
+@app_commands.guild_only()
+async def servidor(interaction: discord.Interaction):
+    g = interaction.guild
+    embed = discord.Embed(title=g.name, color=discord.Color.green())
+    if g.icon:
+        embed.set_thumbnail(url=g.icon.url)
+    embed.add_field(name="Membros", value=g.member_count)
+    embed.add_field(name="Canais", value=len(g.channels))
+    embed.add_field(name="Cargos", value=len(g.roles))
+    embed.add_field(name="Dono", value=g.owner.mention if g.owner else "?")
+    embed.add_field(name="Criado em", value=g.created_at.strftime("%d/%m/%Y"))
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="utilizador", description="Informações de um utilizador")
+@app_commands.describe(membro="Utilizador a consultar (por defeito, tu)")
+@app_commands.guild_only()
+async def utilizador(
+    interaction: discord.Interaction, membro: discord.Member | None = None
+):
+    membro = membro or interaction.user
+    embed = discord.Embed(title=str(membro), color=membro.color)
+    embed.set_thumbnail(url=membro.display_avatar.url)
+    embed.add_field(name="ID", value=membro.id)
+    embed.add_field(
+        name="Conta criada", value=membro.created_at.strftime("%d/%m/%Y")
+    )
+    if membro.joined_at:
+        embed.add_field(
+            name="Entrou no servidor",
+            value=membro.joined_at.strftime("%d/%m/%Y"),
+        )
+    embed.add_field(name="Cargo mais alto", value=membro.top_role.mention)
+    await interaction.response.send_message(embed=embed)
+
+
+@bot.tree.command(name="avatar", description="Mostra o avatar de um utilizador")
+@app_commands.describe(membro="Utilizador (por defeito, tu)")
+async def avatar(
+    interaction: discord.Interaction, membro: discord.User | None = None
+):
+    membro = membro or interaction.user
+    embed = discord.Embed(title=f"Avatar de {membro.display_name}")
+    embed.set_image(url=membro.display_avatar.url)
+    await interaction.response.send_message(embed=embed)
+
+
+# --------------------------------------------------------------- Moderação
+@bot.tree.command(name="limpar", description="Apaga mensagens do canal")
+@app_commands.describe(quantidade="Número de mensagens (1-100)")
+@app_commands.checks.has_permissions(manage_messages=True)
+@app_commands.checks.bot_has_permissions(manage_messages=True)
+@app_commands.guild_only()
+async def limpar(
+    interaction: discord.Interaction,
+    quantidade: app_commands.Range[int, 1, 100],
+):
+    await interaction.response.defer(ephemeral=True)
+    apagadas = await interaction.channel.purge(limit=quantidade)
+    await interaction.followup.send(
+        f"🧹 Apaguei {len(apagadas)} mensagens.", ephemeral=True
+    )
+
+
+def pode_moderar(interaction: discord.Interaction, alvo: discord.Member) -> bool:
+    """Impede moderar o dono, o próprio ou cargos iguais/superiores."""
+    if alvo == interaction.guild.owner or alvo == interaction.user:
+        return False
+    if interaction.user == interaction.guild.owner:
+        return True
+    return alvo.top_role < interaction.user.top_role
+
+
+@bot.tree.command(name="expulsar", description="Expulsa um membro")
+@app_commands.describe(membro="Membro a expulsar", motivo="Motivo")
+@app_commands.checks.has_permissions(kick_members=True)
+@app_commands.checks.bot_has_permissions(kick_members=True)
+@app_commands.guild_only()
+async def expulsar(
+    interaction: discord.Interaction,
+    membro: discord.Member,
+    motivo: str = "Sem motivo especificado",
+):
+    if not pode_moderar(interaction, membro):
+        return await interaction.response.send_message(
+            "❌ Não podes expulsar este membro.", ephemeral=True
+        )
+    await membro.kick(reason=f"{motivo} (por {interaction.user})")
+    await interaction.response.send_message(
+        f"👢 {membro} foi expulso. Motivo: {motivo}"
+    )
+
+
+@bot.tree.command(name="banir", description="Bane um membro")
+@app_commands.describe(membro="Membro a banir", motivo="Motivo")
+@app_commands.checks.has_permissions(ban_members=True)
+@app_commands.checks.bot_has_permissions(ban_members=True)
+@app_commands.guild_only()
+async def banir(
+    interaction: discord.Interaction,
+    membro: discord.Member,
+    motivo: str = "Sem motivo especificado",
+):
+    if not pode_moderar(interaction, membro):
+        return await interaction.response.send_message(
+            "❌ Não podes banir este membro.", ephemeral=True
+        )
+    await membro.ban(reason=f"{motivo} (por {interaction.user})")
+    await interaction.response.send_message(
+        f"🔨 {membro} foi banido. Motivo: {motivo}"
+    )
+
+
+# ------------------------------------------------------------------ Início
+if __name__ == "__main__":
+    if not TOKEN:
+        raise SystemExit("Define DISCORD_TOKEN no ficheiro .env")
+    bot.run(TOKEN)
